@@ -1,0 +1,13 @@
+ipykernel
+jarvis-tools
+matplotlib
+mp-api
+numpy
+pandas
+pymatgen
+python-dotenv
+requests
+roma
+scikit-learn
+tensorboard
+tqdm

@@ -28,27 +28,25 @@
 ## 📁 Project Structure
 ```
 project_root/
-├── main.py                # Entry point
-├── train.py               # Training loop
-├── generate.py            # Generation script
+├── main.py                   # Entry point
+├── train.py                  # Training loop
+├── generate.py               # Generation script
 ├── src/
 │   └── models/
-│       └── unicronformer/ # Encoder backbone (UniCrystalFormer)
-│       └── encoder.py     # Encoder wrapper
-│       └── decoder.py     # Graph decoder
-│       └── vae.py         # ConditionalGraphVAE
+│       └── unicrystalformer/ # Encoder backbone (UniCrystalFormer)
+│       └── encoder.py        # Encoder wrapper
+│       └── decoder.py        # Graph decoder
+│       └── cgcvae.py         # ConditionalGraphVAE
 ```
 
 ## 🔧 Requirements
 
-- Python 3.8+
+- Python 3.10.10 (recommended)
 - PyTorch
 - PyTorch Geometric
 
 ## 🛠️ Setup
 
 ```bash
-git clone https://github.com/yourname/CGCVAE.git
-cd CGCVAE
-pip install -r requirements.txt
+setup.bat
 ```

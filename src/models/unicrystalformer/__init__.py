@@ -1,4 +1,5 @@
 import os
+from typing import Literal
 import torch
 
 from .model import UniCrystalFormer as _RawUniCrystalFormer
@@ -31,8 +32,12 @@ _DEFAULT_CONFIG = {
 }
 
 class UniCrystalFormer(_RawUniCrystalFormer):
-    def __init__(self, device: str = "cpu", version: str = "v1"):
-        super().__init__(**_DEFAULT_CONFIG)
+    def __init__(
+        self,
+        device: Literal["cpu", "gpu"] = "cpu",
+        version: Literal["v1", "v2"] = "v1"
+    ):
+        super().__init__(**_DEFAULT_CONFIG.get(version))
         self.to(device)
 
         ckpt_path = os.path.join(os.path.dirname(__file__), "pretrained", f"{version}.pth")

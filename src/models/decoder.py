@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 class GraphDecoder(nn.Module):
-    def __init__(self, latent_dim, cond_dim, hidden_dim, ...):
+    def __init__(self, latent_dim, cond_dim, hidden_dim):
         super().__init__()
         self.fc = nn.Sequential(
             nn.Linear(latent_dim + cond_dim, hidden_dim),

@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 
+from src.models.unicrystalformer import UniCrystalFormer
+
 class UniCrystalEncoder(nn.Module):
     def __init__(self, backbone: UniCrystalFormer, latent_dim: int):
         super().__init__()

@@ -2,13 +2,12 @@ import math
 from typing import Optional, Tuple, Union
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch_sparse import SparseTensor
-import torch.nn as nn
-
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.typing import Adj, OptTensor, PairTensor
+from torch_sparse import SparseTensor
 
 class MatformerConv(MessagePassing):
     _alpha: OptTensor

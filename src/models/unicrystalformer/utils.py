@@ -1,13 +1,13 @@
 """Shared model-building components."""
-from typing import Optional
 import math
-import numpy as np
+from typing import Optional
 
+import numpy as np
 import torch
-from torch import nn, Tensor
 import torch.nn.functional as F
-from torch_scatter import gather_csr, scatter, segment_csr
+from torch import Tensor, nn
 from torch_geometric.utils.num_nodes import maybe_num_nodes
+from torch_scatter import gather_csr, scatter, segment_csr
 
 class RBFExpansion(nn.Module):
     """Expand interatomic distances with radial basis functions."""

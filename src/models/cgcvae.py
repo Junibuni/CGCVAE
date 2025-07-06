@@ -1,8 +1,8 @@
 import torch
 from torch import nn
 
-from src.models.encoder import UniCrystalEncoder
 from src.models.decoder import GraphDecoder
+from src.models.encoder import UniCrystalEncoder
 
 class ConditionalGraphVAE(nn.Module):
     def __init__(self, encoder: UniCrystalEncoder, decoder: GraphDecoder):

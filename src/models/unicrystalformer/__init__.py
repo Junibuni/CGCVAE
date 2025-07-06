@@ -1,5 +1,6 @@
 import os
 from typing import Literal
+
 import torch
 
 from .model import UniCrystalFormer as _RawUniCrystalFormer

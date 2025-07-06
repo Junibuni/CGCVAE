@@ -3,12 +3,13 @@
 # (See accompanying file README.md file or copy at http://opensource.org/licenses/MIT)
 
 import torch
-import torch_geometric.nn as pyg_nn
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_scatter import scatter
+import torch_geometric.nn as pyg_nn
 from torch_geometric.nn import JumpingKnowledge
-from src.models.unicrystalformer.utils import ExpNormalSmearing, CosineCutoff
+from torch_scatter import scatter
+
+from src.models.unicrystalformer.utils import CosineCutoff, ExpNormalSmearing
 
 
 class CartNet(torch.nn.Module):

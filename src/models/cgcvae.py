@@ -1,9 +1,11 @@
+from abc import ABC, abstractmethod
+
 import torch
 from torch import nn
-from abc import ABC, abstractmethod
 
 from src.models.decoder import CrystalDecoder
 from src.models.encoder import UniCrystalEncoder
+
 
 class _BaseModel(nn.Module, ABC):
     def __init__(self, *args, **kwargs):

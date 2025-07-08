@@ -4,8 +4,8 @@ from typing import Literal
 import torch
 
 from .cartnet import CartNet_layer
-from .utils import SBFExpansion, RBFExpansion
 from .model import UniCrystalFormer as _RawUniCrystalFormer
+from .utils import RBFExpansion, SBFExpansion
 
 _DEFAULT_CONFIG = {
     "v1": {

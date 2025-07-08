@@ -9,6 +9,7 @@ from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.typing import Adj, OptTensor, PairTensor
 from torch_sparse import SparseTensor
 
+
 class MatformerConv(MessagePassing):
     _alpha: OptTensor
 

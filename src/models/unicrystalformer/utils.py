@@ -9,6 +9,7 @@ from torch import Tensor, nn
 from torch_geometric.utils.num_nodes import maybe_num_nodes
 from torch_scatter import gather_csr, scatter, segment_csr
 
+
 @torch.jit.script
 def softmax(src: Tensor, index: Optional[Tensor] = None,
             ptr: Optional[Tensor] = None, num_nodes: Optional[int] = None,

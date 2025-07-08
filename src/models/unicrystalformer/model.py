@@ -9,6 +9,7 @@ from src.models.unicrystalformer.cartnet import CartNet_layer
 from src.models.unicrystalformer.matformer import MatformerConv
 from src.models.unicrystalformer.utils import RBFExpansion
 
+
 class AtomEncoder(nn.Module):
     def __init__(self, num_atom_types, hidden_dim, dropout=0.1):
         super().__init__()

@@ -1,13 +1,17 @@
 import math
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.data import Data
+from torch_scatter import scatter
 
-from src.models.unicrystalformer import CartNet_layer
-from src.models.unicrystalformer import SBFExpansion, RBFExpansion
-from src.models.data_utils import (cart_to_frac_coords,
-                                   frac_to_cart_coords, 
-                                   min_distance_sqr_pbc,
-                                   build_radius_graph_with_pbc)
+from src.models.data_utils import (build_radius_graph_with_pbc,
+                                   cart_to_frac_coords, frac_to_cart_coords,
+                                   min_distance_sqr_pbc)
+from src.models.unicrystalformer import (CartNet_layer, RBFExpansion,
+                                         SBFExpansion)
+
 
 def build_triplets(edge_index, num_nodes):
     j, i = edge_index  # j -> i
@@ -30,9 +34,18 @@ def build_triplets(edge_index, num_nodes):
 
 
 class CrystalDecoder(nn.Module):
-    def __init__(self, hidden_dim=128, edge_dim=128, latent_dim=256,
-                 num_rbf=32, num_sbf=16, num_atom_types=119,
-                 num_message_layers=6, cutoff=5.0, use_sbf=True):
+    def __init__(
+        self,
+        hidden_dim=128,
+        edge_dim=128,
+        latent_dim=256,
+        num_rbf=32,
+        num_sbf=16,
+        num_atom_types=119,
+        num_message_layers=6,
+        cutoff=5.0,
+        use_sbf=True
+    ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.edge_dim = edge_dim
@@ -44,22 +57,26 @@ class CrystalDecoder(nn.Module):
         self.latent_lin = nn.Linear(latent_dim, hidden_dim)
 
         self.rbf = nn.Sequential(
-            RBFExpansion(vmin=0.0, vmax=cutoff, bins=edge_features),
-            nn.Linear(edge_features, hidden_dim),
+            RBFExpansion(vmin=0.0, vmax=cutoff, bins=num_rbf),
+            nn.Linear(num_rbf, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
         self.sbf = nn.Sequential(
-            SBFExpansion(num_sbf=sbf_features),
-            nn.Linear(sbf_features, hidden_dim),
+            SBFExpansion(num_sbf=num_sbf),
+            nn.Linear(num_sbf, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim)
         ) if use_sbf else None
 
-        self.edge_init_lin = nn.Linear(num_rbf + 3, edge_dim)
+        self.dir_lin = nn.Sequential(
+            nn.Linear(3, edge_dim),
+            nn.SiLU(),
+            nn.Linear(edge_dim, hidden_dim)
+        )
 
         self.layers = nn.ModuleList([
-            CartLayerWithSBF(hidden_dim, edge_dim, num_sbf, cutoff)
+            CartNet_layer(hidden_dim, cutoff)
             for _ in range(num_message_layers)
         ])
 
@@ -70,47 +87,57 @@ class CrystalDecoder(nn.Module):
         batch = torch.repeat_interleave(torch.arange(len(num_atoms), device=z.device), num_atoms)
         cart_coords = frac_to_cart_coords(pred_frac_coords, lengths, angles)
 
-        # 1. Build graph
+        # Build graph
         edge_index = build_radius_graph_with_pbc(cart_coords, self.cutoff, batch=batch, lengths=lengths, angles=angles)
         src, dst = edge_index
 
-        # 2. Compute edge vectors
+        # Compute edge vectors
         rel = cart_coords[src] - cart_coords[dst]
         rel = min_distance_sqr_pbc(rel, lengths, angles, batch[dst])  # PBC-aware displacement
         dist = torch.norm(rel, dim=-1)
-        direction = rel / (dist.unsqueeze(-1) + 1e-9)
+        direction = F.normalize(rel, dim=-1)  # [E, 3]
 
-        # 3. Edge embedding
-        rbf = self.rbf_layer(dist)
-        edge_attr = self.edge_init_lin(torch.cat([rbf, direction], dim=-1))  # [E, edge_dim]
-
-        # 4. Node embedding
+        # Edge embedding
+        dir_emb = self.dir_lin(direction)
+        rbf_emb = self.rbf(dist)
+        edge_attr = rbf_emb + dir_emb  # [E, hidden_dim]
+        
+        # Node embedding
         atom_types_clamped = torch.clamp(pred_atom_types, 0, self.atom_embed.num_embeddings - 1)
         node_feat = self.atom_embed(atom_types_clamped)
         node_feat += self.latent_lin(z[batch])  # Broadcast latent z to atoms
 
-        # 5. Build triplets (j→i←k)
+        # Build triplets (j→i←k)
         triplet_idx = build_triplets(edge_index, node_feat.size(0))
 
         j_edge = edge_index[0][triplet_idx[0]]
         k_edge = edge_index[0][triplet_idx[1]]
         center_atom = edge_index[1][triplet_idx[1]]
 
-        vec1 = min_distance_sqr_pbc(cart_coords[k_edge] - cart_coords[center_atom], lengths, angles, batch[center_atom])
-        vec2 = min_distance_sqr_pbc(cart_coords[j_edge] - cart_coords[center_atom], lengths, angles, batch[center_atom])
+        vec1 = F.normalize(vec1, dim=-1)
+        vec2 = F.normalize(vec2, dim=-1)
+        cosine = (vec1 * vec2).sum(dim=-1).clamp(-1.0, 1.0)
+        angle = torch.acos(cosine)
+        
+        if self.use_sbf and angle.numel() > 0:
+            sbf_emb = self.sbf(angle)             # [T, hidden_dim]
+            center_edge = triplet_idx[1]          # 중심 edge
+            sbf_agg = scatter(sbf_emb, center_edge, dim=0, dim_size=edge_attr.size(0), reduce='mean')
+            edge_attr = edge_attr + sbf_agg       # edge feature에 sbf 주입
 
-        angle = torch.acos(torch.clamp(
-            (vec1 * vec2).sum(dim=-1) / (vec1.norm(dim=-1) * vec2.norm(dim=-1) + 1e-9),
-            -1.0, 1.0
-        ))
-        sbf_feat = self.sbf_layer(angle) if self.use_sbf else None
-
-        # 6. Message passing
+        data = Data(
+            x=node_feat,                  # node features
+            edge_attr=edge_attr,          # edge features
+            edge_index=edge_index,        # graph
+            cart_dist=dist                # edge distance (used in CartNet_layer)
+        )
+            
+        # Message passing
         for layer in self.layers:
-            node_feat, edge_attr = layer(node_feat, edge_attr, edge_index, rel, dist, triplet_idx, sbf_feat)
+            data = layer(data)
 
-        # 7. Outputs
-        pred_cart_coord_diff = self.coord_head(node_feat)
-        pred_atom_type_logits = self.type_head(node_feat)
+        # Outputs
+        pred_cart_coord_diff = self.coord_head(data.x)
+        pred_atom_type_logits = self.type_head(data.x)
 
         return pred_cart_coord_diff, pred_atom_type_logits

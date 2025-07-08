@@ -1,23 +1,18 @@
-import numpy as np
-import pandas as pd
-import networkx as nx
-import torch
 import copy
 import itertools
 
-from pymatgen.core.structure import Structure
-from pymatgen.core.lattice import Lattice
-from pymatgen.analysis.graphs import StructureGraph
-from pymatgen.analysis import local_env
-
+import networkx as nx
+import numpy as np
+import pandas as pd
+import torch
 from networkx.algorithms.components import is_connected
-
-from sklearn.metrics import accuracy_score, recall_score, precision_score
-
-from torch_scatter import scatter
-
 from p_tqdm import p_umap
-
+from pymatgen.analysis import local_env
+from pymatgen.analysis.graphs import StructureGraph
+from pymatgen.core.lattice import Lattice
+from pymatgen.core.structure import Structure
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+from torch_scatter import scatter
 
 # Tensor of unit cells. Assumes 27 cells in -1, 0, 1 offsets in the x and y dimensions
 # Note that differing from OCP, we have 27 offsets here because we are in 3D

@@ -114,6 +114,9 @@ class CrystalDecoder(nn.Module):
         k_edge = edge_index[0][triplet_idx[1]]
         center_atom = edge_index[1][triplet_idx[1]]
 
+        vec1 = min_distance_sqr_pbc(cart_coords[k_edge] - cart_coords[center_atom], lengths, angles, batch[center_atom])
+        vec2 = min_distance_sqr_pbc(cart_coords[j_edge] - cart_coords[center_atom], lengths, angles, batch[center_atom])
+
         vec1 = F.normalize(vec1, dim=-1)
         vec2 = F.normalize(vec2, dim=-1)
         cosine = (vec1 * vec2).sum(dim=-1).clamp(-1.0, 1.0)

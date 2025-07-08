@@ -6,7 +6,8 @@ from src.models.unicrystalformer import CartNet_layer
 from src.models.unicrystalformer import SBFExpansion, RBFExpansion
 from src.models.data_utils import (cart_to_frac_coords,
                                    frac_to_cart_coords, 
-                                   min_distance_sqr_pbc)
+                                   min_distance_sqr_pbc,
+                                   build_radius_graph_with_pbc)
 
 def build_triplets(edge_index, num_nodes):
     j, i = edge_index  # j -> i

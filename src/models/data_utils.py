@@ -826,3 +826,55 @@ class StandardScaler:
             np.isnan(transformed_with_nan), self.replace_nan_token, transformed_with_nan)
 
         return transformed_with_none
+
+
+# Custom Function
+def build_radius_graph_with_pbc(cart_coords, cutoff, batch, lengths, angles, max_num_neighbors=1000):
+    """
+    Builds a radius graph for periodic systems using periodic boundary conditions (PBC).
+
+    Args:
+        cart_coords (Tensor): Cartesian coordinates of atoms [N_atoms, 3]
+        cutoff (float): Distance cutoff for edge construction
+        batch (Tensor): Batch index for each atom [N_atoms]
+        lengths (Tensor): Lattice lengths for each structure in the batch [B, 3]
+        angles (Tensor): Lattice angles for each structure in the batch [B, 3]
+        max_num_neighbors (int): Maximum number of neighbors to keep per atom
+
+    Returns:
+        edge_index (LongTensor): Tensor of shape [2, num_edges], with edge source and destination indices
+    """
+    # Assume utility function min_distance_sqr_pbc is already defined
+    # Compute pairwise distances under PBC and filter by cutoff
+
+    N = cart_coords.size(0)
+    device = cart_coords.device
+
+    # Build dense pair indices
+    idx_i = torch.arange(N, device=device).repeat_interleave(N)
+    idx_j = torch.arange(N, device=device).repeat(N)
+
+    mask = batch[idx_i] == batch[idx_j]
+    idx_i = idx_i[mask]
+    idx_j = idx_j[mask]
+
+    if idx_i.numel() == 0:
+        return torch.empty((2, 0), dtype=torch.long, device=device)
+
+    cart_coords_i = cart_coords[idx_i]
+    cart_coords_j = cart_coords[idx_j]
+    batch_i = batch[idx_i]
+
+    dists_sqr = min_distance_sqr_pbc(
+        cart_coords_i, cart_coords_j,
+        lengths=lengths, angles=angles,
+        num_atoms=batch.bincount(), device=device,
+        return_vector=False
+    )
+
+    within_cutoff = dists_sqr <= cutoff ** 2
+    idx_i = idx_i[within_cutoff]
+    idx_j = idx_j[within_cutoff]
+
+    edge_index = torch.stack([idx_j, idx_i], dim=0)  # [2, num_edges]
+    return edge_index

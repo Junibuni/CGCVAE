@@ -8,62 +8,10 @@ from torch_scatter import scatter
 
 from src.models.data_utils import (build_radius_graph_with_pbc,
                                    cart_to_frac_coords, frac_to_cart_coords,
-                                   min_distance_sqr_pbc)
+                                   min_distance_sqr_pbc, MAX_ATOMIC_NUM)
 from src.models.unicrystalformer import (CartNet_layer, RBFExpansion,
                                          SBFExpansion)
-
-
-def build_triplets(edge_index: torch.Tensor, batch: torch.Tensor, num_nodes: int):
-    """
-    Efficiently build triplets (k → i ← j) for batched graphs with PBC.
-    
-    Args:
-        edge_index: [2, E] edge indices (j → i)
-        batch: [num_nodes] assignment of each node to a structure
-        num_nodes: total number of nodes
-    
-    Returns:
-        triplet_index: [2, T] tensor where each column is (eid_k, eid_j)
-    """
-    j, i = edge_index
-    E = j.size(0)
-    device = edge_index.device
-    eid = torch.arange(E, device=device)
-
-    # Assign each edge to its corresponding structure via its target node i
-    edge_batch = batch[i]  # [E]
-    
-    # Sort edges by batch then target i
-    batch_i = edge_batch
-    i_sorted, perm_i = torch.sort(i + batch_i * num_nodes)  # unique per structure
-    j_sorted = j[perm_i]
-    eid_sorted = eid[perm_i]
-    edge_batch_sorted = edge_batch[perm_i]
-
-    # Find segments per structure + target node
-    unique_keys, counts = torch.unique_consecutive(i_sorted, return_counts=True)
-    ptr = torch.cat([torch.tensor([0], device=device), counts.cumsum(0)])  # [num_groups + 1]
-
-    row = []
-    col = []
-
-    for start, end in zip(ptr[:-1], ptr[1:]):
-        eids = eid_sorted[start:end]
-        if eids.size(0) < 2:
-            continue
-        k, j_ = torch.meshgrid(eids, eids, indexing='ij')
-        mask = k != j_
-        row.append(k[mask])
-        col.append(j_[mask])
-
-    if not row:
-        return torch.empty((2, 0), dtype=torch.long, device=device)
-
-    eid_k = torch.cat(row, dim=0)
-    eid_j = torch.cat(col, dim=0)
-    
-    return torch.stack([eid_k, eid_j], dim=0)  # [2, T]
-
+from src.models.unicrystalformer.utils import AtomEmbedding
 
 class CrystalDecoder(nn.Module):
     def __init__(
@@ -73,7 +21,7 @@ class CrystalDecoder(nn.Module):
         latent_dim=256,
         num_rbf=32,
         num_sbf=16,
-        num_atom_types=119,
+        num_atom_types=MAX_ATOMIC_NUM,
         num_message_layers=6,
         cutoff=5.0,
         use_sbf=True
@@ -85,7 +33,7 @@ class CrystalDecoder(nn.Module):
         self.cutoff = cutoff
         self.use_sbf = use_sbf
 
-        self.atom_embed = nn.Embedding(num_atom_types, hidden_dim)
+        self.atom_embed = AtomEmbedding(hidden_dim)
         self.latent_lin = nn.Linear(latent_dim, hidden_dim)
 
         self.rbf = nn.Sequential(
@@ -114,6 +62,57 @@ class CrystalDecoder(nn.Module):
 
         self.coord_head = nn.Linear(hidden_dim, 3)  # Predicts diff to coordinates
         self.type_head = nn.Linear(hidden_dim, num_atom_types)
+    
+    def build_triplets(self, edge_index: torch.Tensor, batch: torch.Tensor, num_nodes: int):
+        """
+        Efficiently build triplets (k → i ← j) for batched graphs with PBC.
+        
+        Args:
+            edge_index: [2, E] edge indices (j → i)
+            batch: [num_nodes] assignment of each node to a structure
+            num_nodes: total number of nodes
+        
+        Returns:
+            triplet_index: [2, T] tensor where each column is (eid_k, eid_j)
+        """
+        j, i = edge_index
+        E = j.size(0)
+        device = edge_index.device
+        eid = torch.arange(E, device=device)
+
+        # Assign each edge to its corresponding structure via its target node i
+        edge_batch = batch[i]  # [E]
+        
+        # Sort edges by batch then target i
+        batch_i = edge_batch
+        i_sorted, perm_i = torch.sort(i + batch_i * num_nodes)  # unique per structure
+        j_sorted = j[perm_i]
+        eid_sorted = eid[perm_i]
+        edge_batch_sorted = edge_batch[perm_i]
+
+        # Find segments per structure + target node
+        unique_keys, counts = torch.unique_consecutive(i_sorted, return_counts=True)
+        ptr = torch.cat([torch.tensor([0], device=device), counts.cumsum(0)])  # [num_groups + 1]
+
+        row = []
+        col = []
+
+        for start, end in zip(ptr[:-1], ptr[1:]):
+            eids = eid_sorted[start:end]
+            if eids.size(0) < 2:
+                continue
+            k, j_ = torch.meshgrid(eids, eids, indexing='ij')
+            mask = k != j_
+            row.append(k[mask])
+            col.append(j_[mask])
+
+        if not row:
+            return torch.empty((2, 0), dtype=torch.long, device=device)
+
+        eid_k = torch.cat(row, dim=0)
+        eid_j = torch.cat(col, dim=0)
+        
+        return torch.stack([eid_k, eid_j], dim=0)  # [2, T]
 
     def forward(self, z, pred_frac_coords, pred_atom_types, num_atoms, lengths, angles):
         batch = torch.repeat_interleave(torch.arange(len(num_atoms), device=z.device), num_atoms)
@@ -135,12 +134,13 @@ class CrystalDecoder(nn.Module):
         edge_attr = rbf_emb + dir_emb  # [E, hidden_dim]
         
         # Node embedding
-        atom_types_clamped = torch.clamp(pred_atom_types, 0, self.atom_embed.num_embeddings - 1)
-        node_feat = self.atom_embed(atom_types_clamped)
-        node_feat += self.latent_lin(z[batch])  # Broadcast latent z to atoms
+        node_feat = self.atom_emb(pred_atom_types)
+
+        if z is not None:
+            node_feat += self.latent_lin(z[batch])  # Safe and non-redundant
 
         # Build triplets (j→i←k)
-        triplet_idx = build_triplets(edge_index, node_feat.size(0))
+        triplet_idx = self.build_triplets(edge_index, batch, node_feat.size(0))
 
         j_edge = edge_index[0][triplet_idx[0]]
         k_edge = edge_index[0][triplet_idx[1]]
@@ -151,7 +151,7 @@ class CrystalDecoder(nn.Module):
 
         vec1 = F.normalize(vec1, dim=-1)
         vec2 = F.normalize(vec2, dim=-1)
-        cosine = (vec1 * vec2).sum(dim=-1).clamp(-1.0, 1.0)
+        cosine = (vec1 * vec2).sum(dim=-1).clamp(-1.0 + 1e-10, 1.0 - 1e-10)
         angle = torch.acos(cosine)
         
         if self.use_sbf and angle.numel() > 0:

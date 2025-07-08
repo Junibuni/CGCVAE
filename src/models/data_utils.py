@@ -14,6 +14,8 @@ from pymatgen.core.structure import Structure
 from sklearn.metrics import accuracy_score, precision_score, recall_score
 from torch_scatter import scatter
 
+MAX_ATOMIC_NUM = 100
+
 # Tensor of unit cells. Assumes 27 cells in -1, 0, 1 offsets in the x and y dimensions
 # Note that differing from OCP, we have 27 offsets here because we are in 3D
 OFFSET_LIST = [

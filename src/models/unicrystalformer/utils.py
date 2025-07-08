@@ -9,6 +9,7 @@ from torch import Tensor, nn
 from torch_geometric.utils.num_nodes import maybe_num_nodes
 from torch_scatter import gather_csr, scatter, segment_csr
 
+from src.models.data_utils import MAX_ATOMIC_NUM
 
 @torch.jit.script
 def softmax(src: Tensor, index: Optional[Tensor] = None,
@@ -220,3 +221,34 @@ class SBFExpansion(nn.Module):
 
     def forward(self, angles):
         return torch.cos(angles.unsqueeze(-1) * self.freqs * math.pi)
+    
+class AtomEmbedding(torch.nn.Module):
+    """
+    Initial atom embeddings based on the atom type
+
+    Parameters
+    ----------
+        emb_size: int
+            Atom embeddings size
+    """
+
+    def __init__(self, emb_size):
+        super().__init__()
+        self.emb_size = emb_size
+
+        # Atom embeddings: We go up to Bi (83).
+        self.embeddings = torch.nn.Embedding(MAX_ATOMIC_NUM, emb_size)
+        # init by uniform distribution
+        torch.nn.init.uniform_(
+            self.embeddings.weight, a=-np.sqrt(3), b=np.sqrt(3)
+        )
+
+    def forward(self, Z):
+        """
+        Returns
+        -------
+            h: torch.Tensor, shape=(nAtoms, emb_size)
+                Atom embeddings.
+        """
+        h = self.embeddings(Z - 1)  # -1 because Z.min()=1 (==Hydrogen)
+        return h

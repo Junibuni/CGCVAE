@@ -13,24 +13,56 @@ from src.models.unicrystalformer import (CartNet_layer, RBFExpansion,
                                          SBFExpansion)
 
 
-def build_triplets(edge_index, num_nodes):
-    j, i = edge_index  # j -> i
-    # For each edge j->i, find neighbors k of i
-    value = torch.arange(j.size(0), device=j.device)  # edge IDs
-    adj_t = [[] for _ in range(num_nodes)]
-    for eid, (src, dst) in enumerate(zip(j.tolist(), i.tolist())):
-        adj_t[dst].append((eid, src))
+def build_triplets(edge_index: torch.Tensor, batch: torch.Tensor, num_nodes: int):
+    """
+    Efficiently build triplets (k → i ← j) for batched graphs with PBC.
+    
+    Args:
+        edge_index: [2, E] edge indices (j → i)
+        batch: [num_nodes] assignment of each node to a structure
+        num_nodes: total number of nodes
+    
+    Returns:
+        triplet_index: [2, T] tensor where each column is (eid_k, eid_j)
+    """
+    j, i = edge_index
+    E = j.size(0)
+    device = edge_index.device
+    eid = torch.arange(E, device=device)
 
-    triplet_indices = []
-    for center in range(num_nodes):
-        neighbors = adj_t[center]
-        for eid_j, j in neighbors:
-            for eid_k, k in neighbors:
-                if j != k:
-                    triplet_indices.append((eid_k, eid_j))
-    if not triplet_indices:
-        return torch.empty((2, 0), dtype=torch.long, device=j.device)
-    return torch.tensor(triplet_indices, dtype=torch.long).t().contiguous()  # [2, T]
+    # Assign each edge to its corresponding structure via its target node i
+    edge_batch = batch[i]  # [E]
+    
+    # Sort edges by batch then target i
+    batch_i = edge_batch
+    i_sorted, perm_i = torch.sort(i + batch_i * num_nodes)  # unique per structure
+    j_sorted = j[perm_i]
+    eid_sorted = eid[perm_i]
+    edge_batch_sorted = edge_batch[perm_i]
+
+    # Find segments per structure + target node
+    unique_keys, counts = torch.unique_consecutive(i_sorted, return_counts=True)
+    ptr = torch.cat([torch.tensor([0], device=device), counts.cumsum(0)])  # [num_groups + 1]
+
+    row = []
+    col = []
+
+    for start, end in zip(ptr[:-1], ptr[1:]):
+        eids = eid_sorted[start:end]
+        if eids.size(0) < 2:
+            continue
+        k, j_ = torch.meshgrid(eids, eids, indexing='ij')
+        mask = k != j_
+        row.append(k[mask])
+        col.append(j_[mask])
+
+    if not row:
+        return torch.empty((2, 0), dtype=torch.long, device=device)
+
+    eid_k = torch.cat(row, dim=0)
+    eid_j = torch.cat(col, dim=0)
+    
+    return torch.stack([eid_k, eid_j], dim=0)  # [2, T]
 
 
 class CrystalDecoder(nn.Module):

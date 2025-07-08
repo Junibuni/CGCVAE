@@ -9,42 +9,6 @@ from torch import Tensor, nn
 from torch_geometric.utils.num_nodes import maybe_num_nodes
 from torch_scatter import gather_csr, scatter, segment_csr
 
-class RBFExpansion(nn.Module):
-    """Expand interatomic distances with radial basis functions."""
-
-    def __init__(
-        self,
-        vmin: float = 0,
-        vmax: float = 8,
-        bins: int = 40,
-        lengthscale: Optional[float] = None,
-    ):
-        """Register torch parameters for RBF expansion."""
-        super().__init__()
-        self.vmin = vmin
-        self.vmax = vmax
-        self.bins = bins
-        self.register_buffer(
-            "centers", torch.linspace(self.vmin, self.vmax, self.bins)
-        )
-
-        if lengthscale is None:
-            # SchNet-style
-            # set lengthscales relative to granularity of RBF expansion
-            self.lengthscale = np.diff(self.centers).mean()
-            self.gamma = 1 / self.lengthscale
-
-        else:
-            self.lengthscale = lengthscale
-            self.gamma = 1 / (lengthscale ** 2)
-
-    def forward(self, distance: torch.Tensor) -> torch.Tensor:
-        """Apply RBF expansion to interatomic distance tensor."""
-        return torch.exp(
-            -self.gamma * (distance.unsqueeze(1) - self.centers) ** 2
-        )
-
-
 @torch.jit.script
 def softmax(src: Tensor, index: Optional[Tensor] = None,
             ptr: Optional[Tensor] = None, num_nodes: Optional[int] = None,
@@ -246,3 +210,12 @@ class RBFExpansion(nn.Module):
         return torch.exp(
             -self.gamma * (distance.unsqueeze(1) - self.centers) ** 2
         )
+        
+class SBFExpansion(nn.Module):
+    def __init__(self, num_sbf=16):
+        super().__init__()
+        self.num_sbf = num_sbf
+        self.freqs = nn.Parameter(torch.arange(1, num_sbf + 1).float(), requires_grad=False)
+
+    def forward(self, angles):
+        return torch.cos(angles.unsqueeze(-1) * self.freqs * math.pi)

@@ -1000,3 +1000,10 @@ def ragged_range(sizes):
     # Finally index into input array for the group repeated o/p
     res = id_steps.cumsum(0)
     return res
+
+def inner_product_normalized(x, y):
+    """
+    Calculate the inner product between the given normalized vectors,
+    giving a result between -1 and 1.
+    """
+    return torch.sum(x * y, dim=-1).clamp(min=-1, max=1)

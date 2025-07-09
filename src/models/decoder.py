@@ -9,8 +9,11 @@ from torch_sparse import SparseTensor
 
 from src.models.data_utils import (build_radius_graph_with_pbc,
                                    frac_to_cart_coords, get_pbc_distances, repeat_blocks,
-                                   min_distance_sqr_pbc, radius_graph_pbc, ragged_range, MAX_ATOMIC_NUM)
+                                   min_distance_sqr_pbc, radius_graph_pbc, ragged_range, inner_product_normalized,
+                                   MAX_ATOMIC_NUM)
 from src.models.unicrystalformer import (CartNet_layer)
+from src.models.basis_layers import (RadialBasis,
+                                     CircularBasisLayer)
 
 class CrystalDecoder(nn.Module):
     def __init__(
@@ -35,18 +38,26 @@ class CrystalDecoder(nn.Module):
         self.atom_embed = AtomEmbedding(hidden_dim)
         self.latent_lin = nn.Linear(latent_dim, hidden_dim)
 
-        self.rbf = nn.Sequential(
-            RBFExpansion(vmin=0.0, vmax=cutoff, bins=num_rbf),
-            nn.Linear(num_rbf, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim)
+        ### ---------------------------------- Basis Functions ---------------------------------- ###
+        self.radial_basis = RadialBasis(
+            num_radial=num_radial,
+            cutoff=cutoff,
+            rbf=rbf,
+            envelope=envelope,
         )
-        self.sbf = nn.Sequential(
-            SBFExpansion(num_sbf=num_sbf),
-            nn.Linear(num_sbf, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        ) if use_sbf else None
+
+        radial_basis_cbf3 = RadialBasis(
+            num_radial=num_radial,
+            cutoff=cutoff,
+            rbf=rbf,
+            envelope=envelope,
+        )
+        self.cbf_basis3 = CircularBasisLayer(
+            num_spherical,
+            radial_basis=radial_basis_cbf3,
+            cbf=cbf,
+            efficient=True,
+        )
 
         self.dir_lin = nn.Sequential(
             nn.Linear(3, edge_dim),
@@ -337,47 +348,29 @@ class CrystalDecoder(nn.Module):
             cart_coords, lengths, angles, num_atoms, edge_index=None, to_jimages=None, num_bonds=None)
         idx_s, idx_t = edge_index
 
-        # Build graph
-        edge_index = build_radius_graph_with_pbc(cart_coords, self.cutoff, batch=batch, lengths=lengths, angles=angles)
-        src, dst = edge_index
+        # Calculate triplet angles
+        cos_theta_cab = inner_product_normalized(V_st[id3_ca], V_st[id3_ba])
+        rad_cbf3, cbf3 = self.cbf_basis3(D_st, cos_theta_cab, id3_ca)
 
-        # Compute edge vectors
-        rel = cart_coords[src] - cart_coords[dst]
-        rel = min_distance_sqr_pbc(rel, lengths, angles, batch[dst])  # PBC-aware displacement
-        dist = torch.norm(rel, dim=-1)
-        direction = F.normalize(rel, dim=-1)  # [E, 3]
+        rbf = self.radial_basis(D_st)
 
-        # Edge embedding
-        dir_emb = self.dir_lin(direction)
-        rbf_emb = self.rbf(dist)
-        edge_attr = rbf_emb + dir_emb  # [E, hidden_dim]
-        
-        # Node embedding
-        node_feat = self.atom_emb(pred_atom_types)
-
+        # Embedding block
+        h = self.atom_emb(pred_atom_types)
+        # Merge z and atom embedding
         if z is not None:
-            node_feat += self.latent_lin(z[batch])  # Safe and non-redundant
+            z_per_atom = z.repeat_interleave(num_atoms, dim=0)
+            h = torch.cat([h, z_per_atom], dim=1)
+            h = self.atom_latent_emb(h)
+        # (nAtoms, emb_size_atom)
+        m = self.edge_emb(h, rbf, idx_s, idx_t)  # (nEdges, emb_size_edge)
 
-        # Build triplets (j→i←k)
-        triplet_idx = self.build_triplets(edge_index, batch, node_feat.size(0))
+        rbf3 = self.mlp_rbf3(rbf)
+        cbf3 = self.mlp_cbf3(rad_cbf3, cbf3, id3_ca, id3_ragged_idx)
 
-        j_edge = edge_index[0][triplet_idx[0]]
-        k_edge = edge_index[0][triplet_idx[1]]
-        center_atom = edge_index[1][triplet_idx[1]]
+        rbf_h = self.mlp_rbf_h(rbf)
+        rbf_out = self.mlp_rbf_out(rbf)
 
-        vec1 = min_distance_sqr_pbc(cart_coords[k_edge] - cart_coords[center_atom], lengths, angles, batch[center_atom])
-        vec2 = min_distance_sqr_pbc(cart_coords[j_edge] - cart_coords[center_atom], lengths, angles, batch[center_atom])
-
-        vec1 = F.normalize(vec1, dim=-1)
-        vec2 = F.normalize(vec2, dim=-1)
-        cosine = (vec1 * vec2).sum(dim=-1).clamp(-1.0 + 1e-10, 1.0 - 1e-10)
-        angle = torch.acos(cosine)
-        
-        if self.use_sbf and angle.numel() > 0:
-            sbf_emb = self.sbf(angle)             # [T, hidden_dim]
-            center_edge = triplet_idx[1]          # 중심 edge
-            sbf_agg = scatter(sbf_emb, center_edge, dim=0, dim_size=edge_attr.size(0), reduce='mean')
-            edge_attr = edge_attr + sbf_agg       # edge feature에 sbf 주입
+        E_t, F_st = self.out_blocks[0](h, m, rbf_out, idx_t)
 
         data = Data(
             x=node_feat,                  # node features

@@ -3,9 +3,6 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.data import Data
-from torch_scatter import scatter
 from torch_sparse import SparseTensor
 
 from src.models.data_utils import (frac_to_cart_coords, get_pbc_distances, repeat_blocks,

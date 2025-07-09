@@ -2,16 +2,11 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch_geometric.data import Data
-from torch_scatter import scatter
-from torch_sparse import SparseTensor
 
 from src.models.data_utils import MAX_ATOMIC_NUM
 from src.models.unicrystalformer import (CartNet_layer)
 from src.models.embedder import LatentConditionEmbedder
-from src.models.basis_layers import (RadialBasis,
-                                     CircularBasisLayer)
 
 class CrystalDecoder(nn.Module):
     def __init__(

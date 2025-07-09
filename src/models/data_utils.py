@@ -5,8 +5,6 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
-from torch_scatter import segment_csr
-
 from networkx.algorithms.components import is_connected
 from p_tqdm import p_umap
 from pymatgen.analysis import local_env
@@ -14,7 +12,7 @@ from pymatgen.analysis.graphs import StructureGraph
 from pymatgen.core.lattice import Lattice
 from pymatgen.core.structure import Structure
 from sklearn.metrics import accuracy_score, precision_score, recall_score
-from torch_scatter import scatter
+from torch_scatter import scatter, segment_csr
 
 MAX_ATOMIC_NUM = 100
 

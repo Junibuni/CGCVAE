@@ -12,7 +12,7 @@ class UniCrystalEncoder(nn.Module):
         self.fc_mu = nn.Linear(2 * backbone.readout.out_channels, latent_dim)
         self.fc_logvar = nn.Linear(2 * backbone.readout.out_channels, latent_dim)
 
-    def forward(self, data):
+    def forward(self, data, target_property):
         emb = self.backbone(data)
         mu = self.fc_mu(emb)
         logvar = self.fc_logvar(emb)

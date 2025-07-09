@@ -11,6 +11,7 @@ from torch_scatter import gather_csr, scatter, segment_csr
 
 from src.models.data_utils import MAX_ATOMIC_NUM
 
+
 @torch.jit.script
 def softmax(src: Tensor, index: Optional[Tensor] = None,
             ptr: Optional[Tensor] = None, num_nodes: Optional[int] = None,

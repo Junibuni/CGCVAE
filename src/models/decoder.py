@@ -5,8 +5,8 @@ import torch.nn as nn
 from torch_geometric.data import Data
 
 from src.models.data_utils import MAX_ATOMIC_NUM
-from src.models.unicrystalformer import (CartNet_layer)
 from src.models.embedder import LatentConditionEmbedder
+from src.models.unicrystalformer import CartNet_layer, MatformerConv
 
 class CrystalDecoder(nn.Module):
     def __init__(
@@ -21,6 +21,7 @@ class CrystalDecoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.cutoff = cutoff
+        self.edge_feature_dim = hidden_dim
 
         self.embedder = LatentConditionEmbedder(
             latent_dim=latent_dim,
@@ -28,9 +29,15 @@ class CrystalDecoder(nn.Module):
             emb_size_edge=hidden_dim,
             cutoff=self.cutoff,
         )
-
-        self.layers = nn.ModuleList([
-            CartNet_layer(hidden_dim, cutoff)
+        
+        self.cart_layers = nn.ModuleList([
+            CartNet_layer(dim_in=hidden_dim, radius=self.cutoff) 
+            for _ in range(num_message_layers)
+        ])
+        self.mat_layers = nn.ModuleList([
+            MatformerConv(in_channels=hidden_dim, out_channels=hidden_dim,
+                          heads=4, edge_dim=self.edge_feature_dim,
+                          concat=False, beta=True)
             for _ in range(num_message_layers)
         ])
 

@@ -5,11 +5,12 @@ import torch
 import torch.nn as nn
 from torch_sparse import SparseTensor
 
-from src.models.data_utils import (frac_to_cart_coords, get_pbc_distances, repeat_blocks,
-                                   radius_graph_pbc, ragged_range, inner_product_normalized,
-                                   MAX_ATOMIC_NUM)
-from src.models.basis_layers import (RadialBasis,
-                                     CircularBasisLayer)
+from src.models.basis_layers import CircularBasisLayer, RadialBasis
+from src.models.data_utils import (MAX_ATOMIC_NUM, frac_to_cart_coords,
+                                   get_pbc_distances, inner_product_normalized,
+                                   radius_graph_pbc, ragged_range,
+                                   repeat_blocks)
+
 
 class AtomEmbedding(torch.nn.Module):
     """

@@ -6,14 +6,15 @@ LICENSE file in the root directory of this source tree.
 """
 
 import math
+
 import numpy as np
 import sympy as sym
+import torch
 from scipy import special as sp
 from scipy.optimize import brentq
 from scipy.special import binom
-import sympy as sym
-import torch
 from torch_geometric.nn.models.schnet import GaussianSmearing
+
 
 def Jn(r, n):
     """

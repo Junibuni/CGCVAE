@@ -5,13 +5,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_scatter import scatter
+from torch_sparse import SparseTensor
 
 from src.models.data_utils import (build_radius_graph_with_pbc,
-                                   cart_to_frac_coords, frac_to_cart_coords,
-                                   min_distance_sqr_pbc, MAX_ATOMIC_NUM)
-from src.models.unicrystalformer import (CartNet_layer, RBFExpansion,
-                                         SBFExpansion)
-from src.models.unicrystalformer.utils import AtomEmbedding
+                                   frac_to_cart_coords, get_pbc_distances, repeat_blocks,
+                                   min_distance_sqr_pbc, radius_graph_pbc, ragged_range, MAX_ATOMIC_NUM)
+from src.models.unicrystalformer import (CartNet_layer)
 
 class CrystalDecoder(nn.Module):
     def __init__(
@@ -114,9 +113,229 @@ class CrystalDecoder(nn.Module):
         
         return torch.stack([eid_k, eid_j], dim=0)  # [2, T]
 
-    def forward(self, z, pred_frac_coords, pred_atom_types, num_atoms, lengths, angles):
-        batch = torch.repeat_interleave(torch.arange(len(num_atoms), device=z.device), num_atoms)
-        cart_coords = frac_to_cart_coords(pred_frac_coords, lengths, angles)
+    def select_symmetric_edges(self, tensor, mask, reorder_idx, inverse_neg):
+        # Mask out counter-edges
+        tensor_directed = tensor[mask]
+        # Concatenate counter-edges after normal edges
+        sign = 1 - 2 * inverse_neg
+        tensor_cat = torch.cat([tensor_directed, sign * tensor_directed])
+        # Reorder everything so the edges of every image are consecutive
+        tensor_ordered = tensor_cat[reorder_idx]
+        return tensor_ordered
+
+    def reorder_symmetric_edges(
+        self, edge_index, cell_offsets, neighbors, edge_dist, edge_vector
+    ):
+        """
+        Reorder edges to make finding counter-directional edges easier.
+
+        Some edges are only present in one direction in the data,
+        since every atom has a maximum number of neighbors. Since we only use i->j
+        edges here, we lose some j->i edges and add others by
+        making it symmetric.
+        We could fix this by merging edge_index with its counter-edges,
+        including the cell_offsets, and then running torch.unique.
+        But this does not seem worth it.
+        """
+
+        # Generate mask
+        mask_sep_atoms = edge_index[0] < edge_index[1]
+        # Distinguish edges between the same (periodic) atom by ordering the cells
+        cell_earlier = (
+            (cell_offsets[:, 0] < 0)
+            | ((cell_offsets[:, 0] == 0) & (cell_offsets[:, 1] < 0))
+            | (
+                (cell_offsets[:, 0] == 0)
+                & (cell_offsets[:, 1] == 0)
+                & (cell_offsets[:, 2] < 0)
+            )
+        )
+        mask_same_atoms = edge_index[0] == edge_index[1]
+        mask_same_atoms &= cell_earlier
+        mask = mask_sep_atoms | mask_same_atoms
+
+        # Mask out counter-edges
+        edge_index_new = edge_index[mask[None, :].expand(2, -1)].view(2, -1)
+
+        # Concatenate counter-edges after normal edges
+        edge_index_cat = torch.cat(
+            [
+                edge_index_new,
+                torch.stack([edge_index_new[1], edge_index_new[0]], dim=0),
+            ],
+            dim=1,
+        )
+
+        # Count remaining edges per image
+        batch_edge = torch.repeat_interleave(
+            torch.arange(neighbors.size(0), device=edge_index.device),
+            neighbors,
+        )
+        batch_edge = batch_edge[mask]
+        neighbors_new = 2 * torch.bincount(
+            batch_edge, minlength=neighbors.size(0)
+        )
+
+        # Create indexing array
+        edge_reorder_idx = repeat_blocks(
+            neighbors_new // 2,
+            repeats=2,
+            continuous_indexing=True,
+            repeat_inc=edge_index_new.size(1),
+        )
+
+        # Reorder everything so the edges of every image are consecutive
+        edge_index_new = edge_index_cat[:, edge_reorder_idx]
+        cell_offsets_new = self.select_symmetric_edges(
+            cell_offsets, mask, edge_reorder_idx, True
+        )
+        edge_dist_new = self.select_symmetric_edges(
+            edge_dist, mask, edge_reorder_idx, False
+        )
+        edge_vector_new = self.select_symmetric_edges(
+            edge_vector, mask, edge_reorder_idx, True
+        )
+
+        return (
+            edge_index_new,
+            cell_offsets_new,
+            neighbors_new,
+            edge_dist_new,
+            edge_vector_new,
+        )
+
+    def get_triplets(self, edge_index, num_atoms):
+        """
+        Get all b->a for each edge c->a.
+        It is possible that b=c, as long as the edges are distinct.
+
+        Returns
+        -------
+        id3_ba: torch.Tensor, shape (num_triplets,)
+            Indices of input edge b->a of each triplet b->a<-c
+        id3_ca: torch.Tensor, shape (num_triplets,)
+            Indices of output edge c->a of each triplet b->a<-c
+        id3_ragged_idx: torch.Tensor, shape (num_triplets,)
+            Indices enumerating the copies of id3_ca for creating a padded matrix
+        """
+        idx_s, idx_t = edge_index  # c->a (source=c, target=a)
+
+        value = torch.arange(
+            idx_s.size(0), device=idx_s.device, dtype=idx_s.dtype
+        )
+        # Possibly contains multiple copies of the same edge (for periodic interactions)
+        adj = SparseTensor(
+            row=idx_t,
+            col=idx_s,
+            value=value,
+            sparse_sizes=(num_atoms, num_atoms),
+        )
+        adj_edges = adj[idx_t]
+
+        # Edge indices (b->a, c->a) for triplets.
+        id3_ba = adj_edges.storage.value()
+        id3_ca = adj_edges.storage.row()
+
+        # Remove self-loop triplets
+        # Compare edge indices, not atom indices to correctly handle periodic interactions
+        mask = id3_ba != id3_ca
+        id3_ba = id3_ba[mask]
+        id3_ca = id3_ca[mask]
+
+        # Get indices to reshape the neighbor indices b->a into a dense matrix.
+        # id3_ca has to be sorted for this to work.
+        num_triplets = torch.bincount(id3_ca, minlength=idx_s.size(0))
+        id3_ragged_idx = ragged_range(num_triplets)
+
+        return id3_ba, id3_ca, id3_ragged_idx
+    
+    def generate_interaction_graph(self, cart_coords, lengths, angles,
+                                   num_atoms, edge_index, to_jimages,
+                                   num_bonds):
+
+        # Generate Graph On The Fly
+        edge_index, to_jimages, num_bonds = radius_graph_pbc(
+            cart_coords, lengths, angles, num_atoms, self.cutoff, self.max_neighbors,
+            device=num_atoms.device)
+
+        out = get_pbc_distances(
+            cart_coords,
+            edge_index,
+            lengths,
+            angles,
+            to_jimages,
+            num_atoms,
+            num_bonds,
+            coord_is_cart=True,
+            return_offsets=True,
+            return_distance_vec=True,
+        )
+
+        edge_index = out["edge_index"]
+        D_st = out["distances"]
+        V_st = -out["distance_vec"] / D_st[:, None]
+
+        (
+            edge_index,
+            cell_offsets,
+            neighbors,
+            D_st,
+            V_st,
+        ) = self.reorder_symmetric_edges(
+            edge_index, to_jimages, num_bonds, D_st, V_st
+        )
+
+        # Indices for swapping c->a and a->c (for symmetric MP)
+        block_sizes = neighbors // 2
+        id_swap = repeat_blocks(
+            block_sizes,
+            repeats=2,
+            continuous_indexing=False,
+            start_idx=block_sizes[0],
+            block_inc=block_sizes[:-1] + block_sizes[1:],
+            repeat_inc=-block_sizes,
+        )
+
+        id3_ba, id3_ca, id3_ragged_idx = self.get_triplets(
+            edge_index, num_atoms=num_atoms.sum(),
+        )
+
+        return (
+            edge_index,
+            neighbors,
+            D_st,
+            V_st,
+            id_swap,
+            id3_ba,
+            id3_ca,
+            id3_ragged_idx,
+        )
+
+    def forward(self, z, pred_frac_coords, pred_atom_types, num_atoms, lengths, angles, target_property):
+        """
+        args:
+            z: (N_cryst, num_latent)
+            frac_coords: (N_atoms, 3)
+            atom_types: (N_atoms, ), need to use atomic number e.g. H = 1
+            num_atoms: (N_cryst,)
+            lengths: (N_cryst, 3)
+            angles: (N_cryst, 3)
+        """
+        cart_coords = frac_to_cart_coords(pred_frac_coords, lengths, angles, num_atoms)
+        batch = torch.arange(num_atoms.size(0),device=num_atoms.device).repeat_interleave(num_atoms, dim=0)
+        
+        (
+            edge_index,
+            neighbors,
+            D_st,
+            V_st,
+            id_swap,
+            id3_ba,
+            id3_ca,
+            id3_ragged_idx,
+        ) = self.generate_interaction_graph(
+            cart_coords, lengths, angles, num_atoms, edge_index=None, to_jimages=None, num_bonds=None)
+        idx_s, idx_t = edge_index
 
         # Build graph
         edge_index = build_radius_graph_with_pbc(cart_coords, self.cutoff, batch=batch, lengths=lengths, angles=angles)

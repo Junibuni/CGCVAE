@@ -5,6 +5,8 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
+from torch_scatter import segment_csr
+
 from networkx.algorithms.components import is_connected
 from p_tqdm import p_umap
 from pymatgen.analysis import local_env
@@ -824,54 +826,177 @@ class StandardScaler:
 
         return transformed_with_none
 
+def repeat_blocks(
+    sizes,
+    repeats,
+    continuous_indexing=True,
+    start_idx=0,
+    block_inc=0,
+    repeat_inc=0,
+):
+    """Repeat blocks of indices.
+    Adapted from https://stackoverflow.com/questions/51154989/numpy-vectorized-function-to-repeat-blocks-of-consecutive-elements
 
-# Custom Function
-def build_radius_graph_with_pbc(cart_coords, cutoff, batch, lengths, angles, max_num_neighbors=1000):
+    continuous_indexing: Whether to keep increasing the index after each block
+    start_idx: Starting index
+    block_inc: Number to increment by after each block,
+               either global or per block. Shape: len(sizes) - 1
+    repeat_inc: Number to increment by after each repetition,
+                either global or per block
+
+    Examples
+    --------
+        sizes = [1,3,2] ; repeats = [3,2,3] ; continuous_indexing = False
+        Return: [0 0 0  0 1 2 0 1 2  0 1 0 1 0 1]
+        sizes = [1,3,2] ; repeats = [3,2,3] ; continuous_indexing = True
+        Return: [0 0 0  1 2 3 1 2 3  4 5 4 5 4 5]
+        sizes = [1,3,2] ; repeats = [3,2,3] ; continuous_indexing = True ;
+        repeat_inc = 4
+        Return: [0 4 8  1 2 3 5 6 7  4 5 8 9 12 13]
+        sizes = [1,3,2] ; repeats = [3,2,3] ; continuous_indexing = True ;
+        start_idx = 5
+        Return: [5 5 5  6 7 8 6 7 8  9 10 9 10 9 10]
+        sizes = [1,3,2] ; repeats = [3,2,3] ; continuous_indexing = True ;
+        block_inc = 1
+        Return: [0 0 0  2 3 4 2 3 4  6 7 6 7 6 7]
+        sizes = [0,3,2] ; repeats = [3,2,3] ; continuous_indexing = True
+        Return: [0 1 2 0 1 2  3 4 3 4 3 4]
+        sizes = [2,3,2] ; repeats = [2,0,2] ; continuous_indexing = True
+        Return: [0 1 0 1  5 6 5 6]
     """
-    Builds a radius graph for periodic systems using periodic boundary conditions (PBC).
+    assert sizes.dim() == 1
+    assert all(sizes >= 0)
 
-    Args:
-        cart_coords (Tensor): Cartesian coordinates of atoms [N_atoms, 3]
-        cutoff (float): Distance cutoff for edge construction
-        batch (Tensor): Batch index for each atom [N_atoms]
-        lengths (Tensor): Lattice lengths for each structure in the batch [B, 3]
-        angles (Tensor): Lattice angles for each structure in the batch [B, 3]
-        max_num_neighbors (int): Maximum number of neighbors to keep per atom
+    # Remove 0 sizes
+    sizes_nonzero = sizes > 0
+    if not torch.all(sizes_nonzero):
+        assert block_inc == 0  # Implementing this is not worth the effort
+        sizes = torch.masked_select(sizes, sizes_nonzero)
+        if isinstance(repeats, torch.Tensor):
+            repeats = torch.masked_select(repeats, sizes_nonzero)
+        if isinstance(repeat_inc, torch.Tensor):
+            repeat_inc = torch.masked_select(repeat_inc, sizes_nonzero)
 
-    Returns:
-        edge_index (LongTensor): Tensor of shape [2, num_edges], with edge source and destination indices
-    """
-    # Assume utility function min_distance_sqr_pbc is already defined
-    # Compute pairwise distances under PBC and filter by cutoff
+    if isinstance(repeats, torch.Tensor):
+        assert all(repeats >= 0)
+        insert_dummy = repeats[0] == 0
+        if insert_dummy:
+            one = sizes.new_ones(1)
+            zero = sizes.new_zeros(1)
+            sizes = torch.cat((one, sizes))
+            repeats = torch.cat((one, repeats))
+            if isinstance(block_inc, torch.Tensor):
+                block_inc = torch.cat((zero, block_inc))
+            if isinstance(repeat_inc, torch.Tensor):
+                repeat_inc = torch.cat((zero, repeat_inc))
+    else:
+        assert repeats >= 0
+        insert_dummy = False
 
-    N = cart_coords.size(0)
-    device = cart_coords.device
-
-    # Build dense pair indices
-    idx_i = torch.arange(N, device=device).repeat_interleave(N)
-    idx_j = torch.arange(N, device=device).repeat(N)
-
-    mask = batch[idx_i] == batch[idx_j]
-    idx_i = idx_i[mask]
-    idx_j = idx_j[mask]
-
-    if idx_i.numel() == 0:
-        return torch.empty((2, 0), dtype=torch.long, device=device)
-
-    cart_coords_i = cart_coords[idx_i]
-    cart_coords_j = cart_coords[idx_j]
-    batch_i = batch[idx_i]
-
-    dists_sqr = min_distance_sqr_pbc(
-        cart_coords_i, cart_coords_j,
-        lengths=lengths, angles=angles,
-        num_atoms=batch.bincount(), device=device,
-        return_vector=False
+    # Get repeats for each group using group lengths/sizes
+    r1 = torch.repeat_interleave(
+        torch.arange(len(sizes), device=sizes.device), repeats
     )
 
-    within_cutoff = dists_sqr <= cutoff ** 2
-    idx_i = idx_i[within_cutoff]
-    idx_j = idx_j[within_cutoff]
+    # Get total size of output array, as needed to initialize output indexing array
+    N = (sizes * repeats).sum()
 
-    edge_index = torch.stack([idx_j, idx_i], dim=0)  # [2, num_edges]
-    return edge_index
+    # Initialize indexing array with ones as we need to setup incremental indexing
+    # within each group when cumulatively summed at the final stage.
+    # Two steps here:
+    # 1. Within each group, we have multiple sequences, so setup the offsetting
+    # at each sequence lengths by the seq. lengths preceding those.
+    id_ar = torch.ones(N, dtype=torch.long, device=sizes.device)
+    id_ar[0] = 0
+    insert_index = sizes[r1[:-1]].cumsum(0)
+    insert_val = (1 - sizes)[r1[:-1]]
+
+    if isinstance(repeats, torch.Tensor) and torch.any(repeats == 0):
+        diffs = r1[1:] - r1[:-1]
+        indptr = torch.cat((sizes.new_zeros(1), diffs.cumsum(0)))
+        if continuous_indexing:
+            # If a group was skipped (repeats=0) we need to add its size
+            insert_val += segment_csr(sizes[: r1[-1]], indptr, reduce="sum")
+
+        # Add block increments
+        if isinstance(block_inc, torch.Tensor):
+            insert_val += segment_csr(
+                block_inc[: r1[-1]], indptr, reduce="sum"
+            )
+        else:
+            insert_val += block_inc * (indptr[1:] - indptr[:-1])
+            if insert_dummy:
+                insert_val[0] -= block_inc
+    else:
+        idx = r1[1:] != r1[:-1]
+        if continuous_indexing:
+            # 2. For each group, make sure the indexing starts from the next group's
+            # first element. So, simply assign 1s there.
+            insert_val[idx] = 1
+
+        # Add block increments
+        insert_val[idx] += block_inc
+
+    # Add repeat_inc within each group
+    if isinstance(repeat_inc, torch.Tensor):
+        insert_val += repeat_inc[r1[:-1]]
+        if isinstance(repeats, torch.Tensor):
+            repeat_inc_inner = repeat_inc[repeats > 0][:-1]
+        else:
+            repeat_inc_inner = repeat_inc[:-1]
+    else:
+        insert_val += repeat_inc
+        repeat_inc_inner = repeat_inc
+
+    # Subtract the increments between groups
+    if isinstance(repeats, torch.Tensor):
+        repeats_inner = repeats[repeats > 0][:-1]
+    else:
+        repeats_inner = repeats
+    insert_val[r1[1:] != r1[:-1]] -= repeat_inc_inner * repeats_inner
+
+    # Assign index-offsetting values
+    id_ar[insert_index] = insert_val
+
+    if insert_dummy:
+        id_ar = id_ar[1:]
+        if continuous_indexing:
+            id_ar[0] -= 1
+
+    # Set start index now, in case of insertion due to leading repeats=0
+    id_ar[0] += start_idx
+
+    # Finally index into input array for the group repeated o/p
+    res = id_ar.cumsum(0)
+    return res
+
+def ragged_range(sizes):
+    """Multiple concatenated ranges.
+
+    Examples
+    --------
+        sizes = [1 4 2 3]
+        Return: [0  0 1 2 3  0 1  0 1 2]
+    """
+    assert sizes.dim() == 1
+    if sizes.sum() == 0:
+        return sizes.new_empty(0)
+
+    # Remove 0 sizes
+    sizes_nonzero = sizes > 0
+    if not torch.all(sizes_nonzero):
+        sizes = torch.masked_select(sizes, sizes_nonzero)
+
+    # Initialize indexing array with ones as we need to setup incremental indexing
+    # within each group when cumulatively summed at the final stage.
+    id_steps = torch.ones(sizes.sum(), dtype=torch.long, device=sizes.device)
+    id_steps[0] = 0
+    insert_index = sizes[:-1].cumsum(0)
+    insert_val = (1 - sizes)[:-1]
+
+    # Assign index-offsetting values
+    id_steps[insert_index] = insert_val
+
+    # Finally index into input array for the group repeated o/p
+    res = id_steps.cumsum(0)
+    return res

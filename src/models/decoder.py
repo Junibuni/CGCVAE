@@ -145,11 +145,27 @@ class CrystalDecoder(nn.Module):
         self.coord_head = nn.Linear(hidden_dim, 3)  # Predicts diff to coordinates
         self.type_head = nn.Linear(hidden_dim, num_atom_types)
         
+        self.film_layer = nn.ModuleList([FiLMLayer(hidden_dim) for _ in range(self.num_layers)])
+        self.dropout = nn.Dropout(p=dropout)
+        
+        self.reset_parameters()
+        
+    def reset_parameters(self):
+        for ffn in self.ffn_layers:
+            for layer in ffn:
+                if hasattr(layer, 'reset_parameters'):
+                    layer.reset_parameters()
+        
+        for norm in self.norm_attn:
+            norm.reset_parameters()
+        for norm in self.norm_ffn:
+            norm.reset_parameters()
+
         self.coord_head.reset_parameters()
         self.type_head.reset_parameters()
-        
-        self.film_layer = FiLMLayer(hidden_dim)
-        self.dropout = nn.Dropout(p=dropout)
+
+        for film in self.film_layer:
+            film.reset_parameters()
 
     def forward(self, z, pred_frac_coords, pred_atom_types, num_atoms, lengths, angles, target_property):
         """
@@ -200,7 +216,7 @@ class CrystalDecoder(nn.Module):
             h_ffn_norm = self.norm_ffn[i](h_ffn, batch)
             h = h_attn + self.dropout(h_ffn_norm)
             
-            h = self.film_layer(h, condition, num_atoms)
+            h = self.film_layer[i](h, condition, num_atoms)
 
 
 

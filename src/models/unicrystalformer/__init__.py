@@ -3,7 +3,8 @@ from typing import Literal
 
 import torch
 
-from .cartnet import CartNet_layer, MatformerConv
+from .cartnet import CartNet_layer
+from .matformer import MatformerConv
 from .model import UniCrystalFormer as _RawUniCrystalFormer
 from .utils import RBFExpansion, SBFExpansion
 

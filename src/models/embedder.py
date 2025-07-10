@@ -69,6 +69,9 @@ class EdgeEmbedding(torch.nn.Module):
         self.silu = nn.SiLU()
         self.scale_factor_silu = 1 / 0.6
 
+    def reset_parameters(self):
+        self.dense.reset_parameters()
+    
     def forward(
         self,
         h,
@@ -208,7 +211,11 @@ class FiLMLayer(nn.Module):
     def __init__(self, emb_dim, condition_dim=1):
         super().__init__()
         self.film = nn.Linear(condition_dim, emb_dim * 2)
+        self.reset_parameters()
 
+    def reset_parameters(self):
+        self.film.reset_parameters()
+        
     def forward(self, x, condition, num_atoms):
         gamma_beta = self.film(condition)  # (N_cryst, 2 * emb_dim)
         gamma, beta = gamma_beta.chunk(2, dim=1)
@@ -283,6 +290,21 @@ class LatentConditionEmbedder(nn.Module):
         )
         
         self.film_layer = FiLMLayer(emb_size_atom)
+        
+        self.reset_parameters()
+        
+    def reset_parameters(self):  
+        self.atom_latent_emb.reset_parameters()       
+        self.edge_emb.reset_parameters()
+
+        self.mlp_rbf3.reset_parameters()
+        self.mlp_cbf3.reset_parameters()
+
+        self.mlp_rbf_h.reset_parameters()
+        self.mlp_rbf_out.reset_parameters()
+
+        self.film_layer.reset_parameters()
+
 
     def build_triplets(self, edge_index: torch.Tensor, batch: torch.Tensor, num_nodes: int):
         """

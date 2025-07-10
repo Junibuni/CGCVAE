@@ -593,4 +593,5 @@ class LatentConditionEmbedder(nn.Module):
             rbf_h, # rbf global info
             rbf_out, # distant dependent output
             batch, # batch info
+            edge_index, D_st, V_st, idx_s, idx_t
         )

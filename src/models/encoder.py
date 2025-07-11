@@ -5,12 +5,15 @@ from src.models.unicrystalformer import UniCrystalFormer
 from src.models.embedder import FiLMLayer
 
 class UniCrystalEncoder(nn.Module):
-    def __init__(self, backbone: UniCrystalFormer, latent_dim: int):
+    def __init__(self, device: str, version: str, latent_dim: int):
         super().__init__()
-        self.backbone = backbone
+        self.backbone = UniCrystalFormer(
+            device=device,
+            version=version
+        )
         self.backbone.fc_out = nn.Identity()
         
-        self.embed_dim = 2 * backbone.readout.out_channels
+        self.embed_dim = 2 * self.backbone.readout.out_channels
         
         self.fc_mu = nn.Linear(self.embed_dim, latent_dim)
         self.fc_logvar = nn.Linear(self.embed_dim, latent_dim)

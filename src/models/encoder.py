@@ -30,7 +30,7 @@ class UniCrystalEncoder(nn.Module):
     def forward(self, data, target_property):
         emb = self.backbone(data)
         
-        target_property = target_property.unsqueeze(1)  # Ensure shape is [N_cryst, 1]
+        target_property = target_property.unsqueeze(1)  # [N_cryst, 1]
         emb = self.film_layer(emb, target_property, num_atoms=torch.ones_like(target_property, dtype=torch.long))
         
         mu = self.fc_mu(emb)

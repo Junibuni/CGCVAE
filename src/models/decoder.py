@@ -9,6 +9,7 @@ from src.models.data_utils import MAX_ATOMIC_NUM
 from src.models.embedder import FiLMLayer, LatentConditionEmbedder
 from src.models.unicrystalformer import CartNet_layer, MatformerConv
 
+
 class EdgeFeatureModulator(nn.Module):
     def __init__(self, 
                  edge_dim: int, 

@@ -1,17 +1,19 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
+import hydra
+import numpy as np
+import pytorch_lightning as pl
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch_scatter import scatter
-import numpy as np
 
+from src.models.data_utils import (MAX_ATOMIC_NUM, cart_to_frac_coords,
+                                   frac_to_cart_coords, min_distance_sqr_pbc)
 from src.models.decoder import CrystalDecoder
 from src.models.encoder import UniCrystalEncoder
-from src.models.data_utils import (MAX_ATOMIC_NUM,
-                                   cart_to_frac_coords,
-                                   frac_to_cart_coords,
-                                   min_distance_sqr_pbc)
+
 
 def build_mlp(in_dim, hidden_dim, fc_num_layers, out_dim):
     mods = [nn.Linear(in_dim, hidden_dim), nn.ReLU()]
@@ -19,14 +21,26 @@ def build_mlp(in_dim, hidden_dim, fc_num_layers, out_dim):
         mods += [nn.Linear(hidden_dim, hidden_dim), nn.ReLU()]
     mods += [nn.Linear(hidden_dim, out_dim)]
     return nn.Sequential(*mods)
-
-class _BaseModel(nn.Module, ABC):
+    
+class _BaseModel(pl.LightningModule, ABC):
     def __init__(self, *args, **kwargs):
         super().__init__()
+        self.save_hyperparameters()
         
     @abstractmethod
     def forward(self, *args, **kwargs):
         pass
+    
+    def configure_optimizers(self):
+        opt = hydra.utils.instantiate(
+            self.hparams.optim.optimizer, params=self.parameters(), _convert_="partial"
+        )
+        if not self.hparams.optim.use_lr_scheduler:
+            return [opt]
+        scheduler = hydra.utils.instantiate(
+            self.hparams.optim.lr_scheduler, optimizer=opt
+        )
+        return {"optimizer": opt, "lr_scheduler": scheduler, "monitor": "val_loss"}
     
     @property
     def num_params(self):
@@ -287,3 +301,46 @@ class ConditionalGraphVAE(_BaseModel):
             self.hparams.beta * kld_loss +
             self.hparams.cost_composition * composition_loss +
             self.hparams.cost_property * property_loss)
+        
+        log_dict = {
+            f'{prefix}_loss': loss,
+            f'{prefix}_natom_loss': num_atom_loss,
+            f'{prefix}_lattice_loss': lattice_loss,
+            f'{prefix}_coord_loss': coord_loss,
+            f'{prefix}_type_loss': type_loss,
+            f'{prefix}_kld_loss': kld_loss,
+            f'{prefix}_composition_loss': composition_loss,
+        }
+        return log_dict, loss
+       
+    def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+        teacher_forcing = (
+            self.current_epoch <= self.hparams.teacher_forcing_max_epoch)
+        outputs = self(batch, teacher_forcing, training=True)
+        log_dict, loss = self.compute_stats(batch, outputs, prefix='train')
+        self.log_dict(
+            log_dict,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        return loss
+
+    def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+        outputs = self(batch, teacher_forcing=False, training=False)
+        log_dict, loss = self.compute_stats(batch, outputs, prefix='val')
+        self.log_dict(
+            log_dict,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        return loss
+
+    def test_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+        outputs = self(batch, teacher_forcing=False, training=False)
+        log_dict, loss = self.compute_stats(batch, outputs, prefix='test')
+        self.log_dict(
+            log_dict,
+        )
+        return loss

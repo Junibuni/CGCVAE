@@ -1,8 +1,9 @@
 import torch
 from torch import nn
 
-from src.models.unicrystalformer import UniCrystalFormer
 from src.models.embedder import FiLMLayer
+from src.models.unicrystalformer import UniCrystalFormer
+
 
 class UniCrystalEncoder(nn.Module):
     def __init__(self, device: str, version: str, latent_dim: int):

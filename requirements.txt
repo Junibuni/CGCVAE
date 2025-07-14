@@ -1,5 +1,7 @@
+hydra-core
 ipykernel
 jarvis-tools
+lightning
 matplotlib
 mp-api
 numpy

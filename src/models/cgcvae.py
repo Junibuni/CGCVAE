@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-import hydra
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -10,6 +9,7 @@ from torch.nn import functional as F
 from torch_scatter import scatter
 from tqdm import tqdm
 
+import hydra
 from src.models.data_utils import (MAX_ATOMIC_NUM, cart_to_frac_coords,
                                    frac_to_cart_coords, min_distance_sqr_pbc)
 from src.models.decoder import CrystalDecoder

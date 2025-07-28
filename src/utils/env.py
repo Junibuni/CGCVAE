@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
 from typing import Optional
+
 import dotenv
+
 
 def get_env(env_name: str, default: Optional[str] = None) -> str:
     if env_name not in os.environ:

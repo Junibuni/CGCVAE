@@ -1,10 +1,12 @@
-import hydra
 import numpy as np
 import pytorch_lightning as pl
 import torch
 from hydra.core.hydra_config import HydraConfig
 
+import hydra
 from src.utils.env import PROJECT_ROOT
+
+
 def run(cfg):
     pass
 

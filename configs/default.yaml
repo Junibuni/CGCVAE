@@ -20,9 +20,10 @@ hydra:
       WANDB_DIR: ${oc.env:WABDB_DIR}
 
 defaults:
+  - _self_
   - data: default
   - logging: default
-  - model: vae
+  - model: default
   - optim: default
   - train: default
 #    Decomment this parameter to get parallel job running

@@ -8,8 +8,9 @@ from src.utils.env import PROJECT_ROOT
 def run(cfg):
     pass
 
-@hydra.main(config_path=str(PROJECT_ROOT / "configs"), config_name="default")
+@hydra.main(config_path=str(PROJECT_ROOT / "configs"), config_name="default", version_base=None)
 def main(cfg):
+    print(cfg)
     run(cfg)
 
 
